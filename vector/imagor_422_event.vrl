@@ -1,0 +1,36 @@
+# nginx 422 syslog line -> Sentry envelope, plus the fields the throttles and the sink use.
+# Any error (no/invalid DSN, no JSON in the line) drops the event: drop_on_error in vector.yaml.
+
+# https://<key>@<host>[/<prefix>]/<project_id>
+dsn = parse_regex!(get_env_var!("IMAGOR_SENTRY_DSN"), r'^(?P<scheme>https?)://(?P<key>[^:@]+)(?::[^@]*)?@(?P<base>.+?)/(?P<project>\d+)/?$')
+
+# '<190>Oct 14 15:38:51 imagor422: {"time":...,"host":...,"uri":...,"referer":...,"ua":...}'
+message = string!(.message)
+entry = object!(parse_json!(slice!(message, find(message, "{"))))
+uri = string!(entry.uri)
+
+# /<signature|unsafe>/<options>/<image> -> <image>, with /./ and // collapsed (scheme:// kept)
+# so path variants of one image share the dedup key; filters:...() may contain slashes
+path = replace(uri, r'/(?:\./)+', "/")
+path = replace(path, r'([^:])/{2,}', "$1/")
+image = replace(path, r'^/+(?:unsafe|[A-Za-z0-9_=-]{16,})/(?:(?:meta|trim(?::[a-z-]+)?(?::\d+)?|(?:full-|adaptive-)?fit-in|stretch|smart|left|right|center|top|bottom|middle|[\d.]+x[\d.]+:[\d.]+x[\d.]+|-?\d*x-?\d*|filters:(?:[^/()]|\((?:[^()]|\([^()]*\))*\))*)/)*', "")
+
+event_id = replace(uuid_v4(), "-", "")
+event = {
+  "event_id": event_id,
+  "level": "warning",
+  "environment": get_env_var("SENTRY_ENVIRONMENT") ?? "unknown",
+  "message": {"formatted": "imagor 422: " + image},
+  "fingerprint": ["imagor-422", image],
+  "request": {
+    "url": "https://" + string!(entry.host) + uri,
+    "headers": {"Referer": entry.referer, "User-Agent": entry.ua}
+  }
+}
+
+. = {
+  "message": encode_json({"event_id": event_id}) + "\n" + encode_json({"type": "event"}) + "\n" + encode_json(event) + "\n",
+  "image": image,
+  "sentry_url": dsn.scheme + "://" + dsn.base + "/api/" + dsn.project + "/envelope/",
+  "sentry_key": dsn.key
+}

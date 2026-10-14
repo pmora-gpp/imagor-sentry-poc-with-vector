@@ -1,0 +1,81 @@
+# Local POC of the dev image-processor pod with the 422 -> Sentry forwarder implemented as a
+# stock Vector sidecar (vector/vector.yaml) instead of the custom Python script.
+#
+# In Kubernetes the pod's containers share one network namespace, which is why nginx can reach
+# imagor on 127.0.0.1:8000 and the forwarder on udp://127.0.0.1:5140. The `pod` service
+# reproduces that: it holds the namespace (the same pause container Kubernetes uses) and the
+# pod's containers join it with `network_mode: service:pod`.
+#
+# Replaced external dependencies:
+#   S3 loader/storage/result storage -> local files (./images, result volume)
+#   HTTP loader (globalcitizen.org)  -> disabled
+#   Sentry (gc-imagor)               -> mock-sentry, which only logs what it receives
+name: imagor-sentry-poc-with-vector
+
+services:
+  pod:
+    image: registry.k8s.io/pause:3.10
+    ports:
+      - "8081:80" # image-processor-nginx (8080 is left to the Python POC)
+
+  image-processor-nginx:
+    image: nginx:1.28.0
+    command: ["/usr/sbin/nginx", "-g", "daemon off;"]
+    network_mode: service:pod
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - image-processor
+
+  image-processor:
+    image: shumc/imagor:1.6.3
+    network_mode: service:pod
+    mem_limit: 1g # dev runs on the base limit (1024Mi)
+    environment:
+      PORT: "8000"
+      IMAGOR_AUTO_WEBP: "1"
+      IMAGOR_PROCESS_CONCURRENCY: "4"
+      IMAGOR_PROCESS_QUEUE_SIZE: "64"
+      # local-only: dev signs URLs with a secret from gc-config, the POC uses /unsafe/
+      IMAGOR_UNSAFE: "1"
+      HTTP_LOADER_DISABLE: "1"
+      FILE_LOADER_BASE_DIR: /mnt/images
+      FILE_RESULT_STORAGE_BASE_DIR: /mnt/result
+    volumes:
+      - ./images:/mnt/images:ro
+      - result:/mnt/result
+    depends_on:
+      pod:
+        condition: service_started
+      seed-images:
+        condition: service_completed_successfully
+
+  # same container name as in the k8s pod, so the overlay patches would still apply
+  imagor-sentry-forwarder:
+    image: timberio/vector:0.58.0-alpine
+    command: ["--config", "/etc/vector/vector.yaml"]
+    network_mode: service:pod
+    mem_limit: 128m
+    environment:
+      # points at the mock instead of gc-imagor; format is https://<key>@<host>/<project_id>
+      IMAGOR_SENTRY_DSN: ${IMAGOR_SENTRY_DSN-http://poc-public-key@mock-sentry:9000/1}
+      SENTRY_ENVIRONMENT: dev
+    volumes:
+      - ./vector:/etc/vector:ro # vector.yaml + imagor_422_event.vrl
+    depends_on:
+      - mock-sentry
+
+  mock-sentry:
+    build: ./mock-sentry
+    environment:
+      # HTTP status to answer with; e.g. 429 or 500 to exercise Vector's retry/drop path
+      MOCK_STATUS: ${MOCK_STATUS:-200}
+
+  # one-shot: writes test images into ./images/poc (skips files that already exist)
+  seed-images:
+    build: ./seed-images
+    volumes:
+      - ./images:/images
+
+volumes:
+  result:

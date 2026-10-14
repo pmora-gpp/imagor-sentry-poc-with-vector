@@ -1,0 +1,6 @@
+CONTAINER ID   IMAGE                                       COMMAND                  CREATED       STATUS       PORTS                                     NAMES
+7783dd662067   timberio/vector:0.58.0-alpine               "/usr/local/bin/vect…"   6 hours ago   Up 6 hours                                             imagor-sentry-poc-with-vector-imagor-sentry-forwarder-1
+10ef6dc71a06   imagor-sentry-poc-with-vector-mock-sentry   "python -u server.py"    6 hours ago   Up 6 hours   9000/tcp                                  imagor-sentry-poc-with-vector-mock-sentry-1
+da1057b85fec   nginx:1.28.0                                "/docker-entrypoint.…"   6 hours ago   Up 6 hours                                             imagor-sentry-poc-with-vector-image-processor-nginx-1
+23b4b5281078   shumc/imagor:1.6.3                          "/usr/local/bin/imag…"   6 hours ago   Up 6 hours                                             imagor-sentry-poc-with-vector-image-processor-1
+a8d61b69ee2e   registry.k8s.io/pause:3.10                  "/pause"                 6 hours ago   Up 6 hours   0.0.0.0:8081->80/tcp, [::]:8081->80/tcp   imagor-sentry-poc-with-vector-pod-1

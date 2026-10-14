@@ -1,0 +1,58 @@
+# imagor 422 -> Sentry. nginx sends one syslog line per 422 to udp://127.0.0.1:5140.
+# Env: IMAGOR_SENTRY_DSN, SENTRY_ENVIRONMENT.
+sources:
+  nginx_422:
+    type: socket
+    mode: udp
+    address: 127.0.0.1:5140
+
+transforms:
+  event:
+    type: remap
+    inputs: [nginx_422]
+    drop_on_error: true
+    file: /etc/vector/imagor_422_event.vrl
+
+  # one event per image per hour
+  per_image:
+    type: throttle
+    inputs: [event]
+    key_field: "{{ image }}"
+    threshold: 1
+    window_secs: 3600
+
+  # Sentry quota guard
+  sentry_cap:
+    type: throttle
+    inputs: [per_image]
+    threshold: 60
+    window_secs: 60
+
+sinks:
+  sentry:
+    type: http
+    inputs: [sentry_cap]
+    uri: "{{ sentry_url }}"
+    # needed for a fully templated URI; sentry_url comes from the DSN env var, never from requests
+    dangerously_allow_unconfined_template_resolution: true
+    encoding:
+      codec: text
+    framing:
+      method: bytes
+    batch:
+      max_events: 1 # one envelope per request
+    healthcheck:
+      enabled: false # no fixed URI to probe
+    request:
+      retry_attempts: 3
+      headers:
+        Content-Type: application/x-sentry-envelope
+        X-Sentry-Auth: "Sentry sentry_version=7, sentry_key={{ sentry_key }}, sentry_client=vector-imagor-forwarder/1.0"
+
+  # one log line per event sent to Sentry, e.g. {"image":"poc/wide.png"}
+  stdout:
+    type: console
+    inputs: [sentry_cap]
+    encoding:
+      codec: json
+      only_fields: [image]
